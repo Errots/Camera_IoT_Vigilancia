@@ -1,59 +1,69 @@
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-import uvicorn
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
-class ConnectionManager:
+class StreamRelay:
     def __init__(self):
-        self.camera: WebSocket = None
-        self.viewers: list[WebSocket] = []
+        self.camera: WebSocket | None = None
+        self.viewers: set[WebSocket] = set()
 
-    async def connect_cam(self, websocket: WebSocket):
-        await websocket.accept()
-        self.camera = websocket
-        print("ESP32-CAM conectada al Relay.")
-
-    def disconnect_cam(self):
-        self.camera = None
-        print("ESP32-CAM desconectada.")
-
-    async def connect_viewer(self, websocket: WebSocket):
-        await websocket.accept()
-        self.viewers.append(websocket)
-        print("Nuevo visor conectado.")
-
-    def disconnect_viewer(self, websocket: WebSocket):
-        if websocket in self.viewers:
-            self.viewers.remove(websocket)
-            print("Visor desconectado.")
-
-    async def broadcast(self, data: bytes):
-        for viewer in self.viewers:
+    async def set_camera(self, ws: WebSocket):
+        await ws.accept()
+        if self.camera:
             try:
-                await viewer.send_bytes(data)
-            except:
+                await self.camera.close()
+            except Exception:
                 pass
+        self.camera = ws
 
-manager = ConnectionManager()
+    async def add_viewer(self, ws: WebSocket):
+        await ws.accept()
+        self.viewers.add(ws)
+
+    def remove_viewer(self, ws: WebSocket):
+        self.viewers.discard(ws)
+
+    async def broadcast(self, frame: bytes):
+        if not self.viewers:
+            return
+        disconnected = []
+        for viewer in list(self.viewers):
+            try:
+                await asyncio.wait_for(viewer.send_bytes(frame), timeout=0.5)
+            except Exception:
+                disconnected.append(viewer)
+        for viewer in disconnected:
+            self.viewers.discard(viewer)
+
+relay = StreamRelay()
+
+@app.get("/")
+async def status():
+    return {
+        "status": "online",
+        "camera_connected": relay.camera is not None,
+        "active_viewers": len(relay.viewers),
+    }
 
 @app.websocket("/ws/cam")
-async def cam_endpoint(websocket: WebSocket):
-    await manager.connect_cam(websocket)
+async def camera_ws(websocket: WebSocket):
+    await relay.set_camera(websocket)
     try:
         while True:
-            data = await websocket.receive_bytes()
-            await manager.broadcast(data)
+            frame = await websocket.receive_bytes()
+            await relay.broadcast(frame)
     except WebSocketDisconnect:
-        manager.disconnect_cam()
+        if relay.camera == websocket:
+            relay.camera = None
 
 @app.websocket("/ws/viewer")
-async def viewer_endpoint(websocket: WebSocket):
-    await manager.connect_viewer(websocket)
+async def viewer_ws(websocket: WebSocket):
+    await relay.add_viewer(websocket)
     try:
         while True:
+            # Mantiene viva la conexión recibiendo pings o mensajes de control
             await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect_viewer(websocket)
-
-if __name__ == "__main__":
-    uvicorn.run("main.py", host="0.0.0.0", port=10000)
+        relay.remove_viewer(websocket)
