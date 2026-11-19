@@ -1,69 +1,103 @@
 import asyncio
+import re
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+import uvicorn
 
 app = FastAPI()
 
-class StreamRelay:
-    def __init__(self):
-        self.camera: WebSocket | None = None
-        self.viewers: set[WebSocket] = set()
+CAM_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
-    async def set_camera(self, ws: WebSocket):
-        await ws.accept()
-        if self.camera:
+
+class MultiCameraManager:
+    def __init__(self):
+        self.cameras: dict[str, WebSocket] = {}
+        self.viewers: dict[str, set[WebSocket]] = {}
+
+    async def connect_cam(self, cam_id: str, websocket: WebSocket):
+        await websocket.accept()
+        old_ws = self.cameras.get(cam_id)
+        if old_ws is not None and old_ws is not websocket:
             try:
-                await self.camera.close()
+                await old_ws.close()
             except Exception:
                 pass
-        self.camera = ws
+        self.cameras[cam_id] = websocket
+        print(f"[RELAY] Cámara conectada: {cam_id}")
 
-    async def add_viewer(self, ws: WebSocket):
-        await ws.accept()
-        self.viewers.add(ws)
+    def disconnect_cam(self, cam_id: str, websocket: WebSocket):
+        if self.cameras.get(cam_id) is websocket:
+            del self.cameras[cam_id]
+            print(f"[RELAY] Cámara desconectada: {cam_id}")
 
-    def remove_viewer(self, ws: WebSocket):
-        self.viewers.discard(ws)
+    async def connect_viewer(self, cam_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.viewers.setdefault(cam_id, set()).add(websocket)
+        print(f"[RELAY] Visor conectado a: {cam_id}")
 
-    async def broadcast(self, frame: bytes):
-        if not self.viewers:
+    def disconnect_viewer(self, cam_id: str, websocket: WebSocket):
+        viewers = self.viewers.get(cam_id)
+        if viewers:
+            viewers.discard(websocket)
+            if not viewers:
+                del self.viewers[cam_id]
+
+    async def broadcast(self, cam_id: str, data: bytes):
+        viewers = self.viewers.get(cam_id)
+        if not viewers:
             return
-        disconnected = []
-        for viewer in list(self.viewers):
+        dead = []
+        for viewer in list(viewers):
             try:
-                await asyncio.wait_for(viewer.send_bytes(frame), timeout=0.5)
+                await asyncio.wait_for(viewer.send_bytes(data), timeout=0.5)
             except Exception:
-                disconnected.append(viewer)
-        for viewer in disconnected:
-            self.viewers.discard(viewer)
+                dead.append(viewer)
+        for viewer in dead:
+            viewers.discard(viewer)
 
-relay = StreamRelay()
+
+manager = MultiCameraManager()
+
 
 @app.get("/")
-async def status():
-    return {
-        "status": "online",
-        "camera_connected": relay.camera is not None,
-        "active_viewers": len(relay.viewers),
-    }
+async def health():
+    return {"status": "online", "cameras": sorted(manager.cameras.keys())}
 
-@app.websocket("/ws/cam")
-async def camera_ws(websocket: WebSocket):
-    await relay.set_camera(websocket)
+
+@app.get("/api/cameras")
+async def list_cameras():
+    return {"cameras": sorted(manager.cameras.keys())}
+
+
+@app.websocket("/ws/cam/{cam_id}")
+async def cam_endpoint(websocket: WebSocket, cam_id: str):
+    if not CAM_ID_REGEX.match(cam_id):
+        await websocket.close(code=1008)
+        return
+    await manager.connect_cam(cam_id, websocket)
     try:
         while True:
-            frame = await websocket.receive_bytes()
-            await relay.broadcast(frame)
+            data = await websocket.receive_bytes()
+            await manager.broadcast(cam_id, data)
     except WebSocketDisconnect:
-        if relay.camera == websocket:
-            relay.camera = None
+        manager.disconnect_cam(cam_id, websocket)
+    except Exception:
+        manager.disconnect_cam(cam_id, websocket)
 
-@app.websocket("/ws/viewer")
-async def viewer_ws(websocket: WebSocket):
-    await relay.add_viewer(websocket)
+
+@app.websocket("/ws/viewer/{cam_id}")
+async def viewer_endpoint(websocket: WebSocket, cam_id: str):
+    if not CAM_ID_REGEX.match(cam_id):
+        await websocket.close(code=1008)
+        return
+    await manager.connect_viewer(cam_id, websocket)
     try:
         while True:
-            # Mantiene viva la conexión recibiendo pings o mensajes de control
             await websocket.receive_text()
     except WebSocketDisconnect:
-        relay.remove_viewer(websocket)
+        manager.disconnect_viewer(cam_id, websocket)
+    except Exception:
+        manager.disconnect_viewer(cam_id, websocket)
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
