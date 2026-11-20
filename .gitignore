@@ -1,0 +1,6 @@
+tools/
+local-nvr/recordings/*.mp4
+local-nvr/
+recordings/*.tmp
+esp32-firmware/.pio/
+__pycache__/
