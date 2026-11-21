@@ -1,9 +1,10 @@
 @echo off
 setlocal
 
-:: Solo monta P: si el script se ejecuto desde otra unidad (ej. C:\ o USB)
+:: Calcula la ruta absoluta ANTES del bloque IF para evitar expansion vacia
+for %%I in ("%~dp0..") do set "KIT_ROOT=%%~fI"
+
 if /I not "%~d0"=="P:" (
-    for %%I in ("%~dp0..") do set "KIT_ROOT=%%~fI"
     subst P: /D >nul 2>&1
     subst P: "%KIT_ROOT%"
     if errorlevel 1 (
