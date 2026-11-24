@@ -112,9 +112,9 @@ async def health():
 
 
 @app.get("/api/cameras")
-async def list_cameras():
-    token_ok = valid_token(Request.headers.get("x-api-token"), NVR_TOKEN)
-    cookie_ok = valid_mobile_cookie(Request.cookies.get("mobile_session"))
+async def list_cameras(request: Request):
+    token_ok = valid_token(request.headers.get("x-api-token"), NVR_TOKEN)
+    cookie_ok = valid_mobile_cookie(request.cookies.get("mobile_session"))
     if not (token_ok or cookie_ok):
         raise HTTPException(status_code=401, detail="No autorizado")
     return {"cameras": sorted(manager.cameras.keys())}
