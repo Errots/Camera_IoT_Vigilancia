@@ -108,7 +108,7 @@ manager = MultiCameraManager()
 
 @app.get("/")
 async def health():
-    return {"status": "online", "cameras": sorted(manager.cameras.keys())}
+    return {"status": "online"}
 
 
 @app.get("/api/cameras")
