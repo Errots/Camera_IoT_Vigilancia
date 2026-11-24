@@ -1,13 +1,60 @@
 import asyncio
 import re
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import hashlib
+import hmac
+import os
+import secrets
+import time
+from fastapi import Depends, HTTPException, Request, status, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import uvicorn
 
 app = FastAPI()
 
 CAM_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
+CAM_TOKEN = os.getenv("CAM_TOKEN", "")
+NVR_TOKEN = os.getenv("NVR_TOKEN", "")
+MOBILE_USER = os.getenv("MOBILE_USER", "")
+MOBILE_PASS = os.getenv("MOBILE_PASS", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+SESSION_TTL = 43200  # 12 horas
+
+security = HTTPBasic()
+
+def valid_token(provided: str | None, expected: str) -> bool:
+    # Falla cerrado: si la variable no existe en Render, rechaza todo
+    if not expected or not provided:
+        return False
+    return secrets.compare_digest(provided, expected)
+
+
+def create_mobile_cookie() -> str:
+    exp = str(int(time.time()) + SESSION_TTL)
+    sig = hmac.new(SESSION_SECRET.encode(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def valid_mobile_cookie(cookie: str | None) -> bool:
+    if not SESSION_SECRET or not cookie or "." not in cookie:
+        return False
+    exp_str, sig = cookie.split(".", 1)
+    if not exp_str.isdigit() or int(exp_str) < int(time.time()):
+        return False
+    expected_sig = hmac.new(SESSION_SECRET.encode(), exp_str.encode(), hashlib.sha256).hexdigest()
+    return secrets.compare_digest(sig, expected_sig)
+
+
+def require_mobile_login(creds: HTTPBasicCredentials = Depends(security)):
+    user_ok = valid_token(creds.username, MOBILE_USER)
+    pass_ok = valid_token(creds.password, MOBILE_PASS)
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales inválidas",
+            headers={"WWW-Authenticate": "Basic"},
+        )
 
 class MultiCameraManager:
     def __init__(self):
@@ -66,11 +113,18 @@ async def health():
 
 @app.get("/api/cameras")
 async def list_cameras():
+    token_ok = valid_token(request.headers.get("x-api-token"), NVR_TOKEN)
+    cookie_ok = valid_mobile_cookie(request.cookies.get("mobile_session"))
+    if not (token_ok or cookie_ok):
+        raise HTTPException(status_code=401, detail="No autorizado")
     return {"cameras": sorted(manager.cameras.keys())}
 
 
 @app.websocket("/ws/cam/{cam_id}")
 async def cam_endpoint(websocket: WebSocket, cam_id: str):
+    if not valid_token(websocket.headers.get("x-api-token"), CAM_TOKEN):
+        await websocket.close(code=1008)
+        return
     if not CAM_ID_REGEX.match(cam_id):
         await websocket.close(code=1008)
         return
@@ -100,8 +154,8 @@ async def viewer_endpoint(websocket: WebSocket, cam_id: str):
         manager.disconnect_viewer(cam_id, websocket)
 
 @app.get("/mobile", response_class=HTMLResponse)
-async def mobile_viewer():
-    return """<!DOCTYPE html>
+async def mobile_viewer(_: None = Depends(require_mobile_login)):
+    response = HTMLResponse(content="""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
@@ -190,7 +244,16 @@ async def mobile_viewer():
     setInterval(loadCams, 5000);
   </script>
 </body>
-</html>"""
+</html>""")
+    response.set_cookie(
+        key="mobile_session",
+        value=create_mobile_cookie(),
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=SESSION_TTL,
+    )
+    return response
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=10000)

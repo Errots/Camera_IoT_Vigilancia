@@ -10,6 +10,8 @@
 static const char* WIFI_SSID   = "Alumnos";
 static const char* WIFI_PASS   = "";
 
+static const char* CAM_TOKEN = "PEGA_AQUI_TU_CAM_TOKEN";
+
 static const char* RELAY_HOST  = "camera-privserver.onrender.com"; // Sin https:// ni rutas
 static const uint16_t RELAY_PORT = 443;
 static const char* RELAY_PATH    = "/ws/cam/" CAMERA_ID;
@@ -96,7 +98,7 @@ static bool initCamera() {
 static void connectWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
-    WiFi.begin(WIFI_SSID);
+    WiFi.begin(WIFI_SSID,WIFI_PASS);
 
     Serial.printf("[WIFI] Conectando a %s", WIFI_SSID);
     while (WiFi.status() != WL_CONNECTED) {
@@ -148,8 +150,9 @@ static bool connectWebSocket() {
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: %s\r\n"
-        "Sec-WebSocket-Version: 13\r\n\r\n",
-        RELAY_PATH, RELAY_HOST, wsKey.c_str()
+        "Sec-WebSocket-Version: 13\r\n"
+        "X-API-Token: %s\r\n\r\n",
+        RELAY_PATH, RELAY_HOST, wsKey.c_str(), CAM_TOKEN
     );
 
     uint32_t start = millis();
