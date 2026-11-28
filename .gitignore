@@ -1,6 +1,5 @@
 tools/
-local-nvr/recordings/*.mp4
-local-nvr/
+local-nvr/recordings/*
 recordings/*.tmp
 esp32-firmware/.pio/
 __pycache__/

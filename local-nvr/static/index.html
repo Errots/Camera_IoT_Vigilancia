@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NVR Multicámara IoT</title>
+  <style>
+    :root { --bg: #0f172a; --panel: #1e293b; --accent: #38bdf8; --ok: #22c55e; --off: #64748b; --text: #f8fafc; --border: #334155; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+    header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .cam-tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .cam-tab { display: inline-flex; align-items: center; gap: 0.45rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 0.45rem 0.85rem; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+    .cam-tab.active { border-color: var(--accent); background: #0c4a6e; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+    .dot.online { background: var(--ok); }
+    .workspace { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
+    main { padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; overflow-y: auto; }
+    aside { background: var(--panel); padding: 1.5rem; border-left: 1px solid var(--border); overflow-y: auto; }
+    .screen { width: 100%; max-width: 840px; aspect-ratio: 4/3; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: #94a3b8; }
+    img, video { width: 100%; height: 100%; object-fit: contain; }
+    .rec { background: var(--bg); padding: 0.75rem; border-radius: 6px; margin-bottom: 0.6rem; border: 1px solid var(--border); font-size: 0.88rem; }
+    button.btn, a.btn { background: var(--accent); color: #0f172a; border: none; padding: 0.35rem 0.75rem; border-radius: 4px; font-weight: 600; cursor: pointer; text-decoration: none; font-size: 0.82rem; margin-right: 0.4rem; display: inline-block; margin-top: 0.45rem; }
+    button.sec { background: #475569; color: #fff; border: none; padding: 0.4rem 0.8rem; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong style="color:var(--accent); font-size:1.05rem;">Cámaras:</strong>
+    <div class="cam-tabs" id="cam-tabs">Buscando cámaras...</div>
+  </header>
+
+  <div class="workspace">
+    <main>
+      <div style="display:flex; justify-content:space-between; align-items:center; max-width:840px;">
+        <h2 id="title" style="margin:0; color:var(--accent); font-size:1.2rem;">Selecciona una cámara</h2>
+        <button class="sec" onclick="setLive()">Volver a Vivo</button>
+      </div>
+      <div class="screen" id="viewer">Esperando conexión de alguna cámara...</div>
+    </main>
+
+    <aside>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 id="rec-header" style="margin:0; color:var(--accent);">Grabaciones</h3>
+        <button class="sec" onclick="fetchRecs()">Refrescar</button>
+      </div>
+      <div id="list"><p style="color:#94a3b8;">Sin cámara seleccionada.</p></div>
+    </aside>
+  </div>
+
+  <script>
+    const viewer = document.getElementById('viewer');
+    const title = document.getElementById('title');
+    const tabsEl = document.getElementById('cam-tabs');
+    const listEl = document.getElementById('list');
+    const recHeader = document.getElementById('rec-header');
+
+    let selectedCam = null;
+    let mode = 'live'; // 'live' o 'playback'
+
+    function stopCurrentMedia() {
+      const oldImg = viewer.querySelector('img');
+      if (oldImg) oldImg.src = ''; // Libera inmediatamente el socket MJPEG en el navegador
+      const oldVid = viewer.querySelector('video');
+      if (oldVid) { oldVid.pause(); oldVid.removeAttribute('src'); oldVid.load(); }
+    }
+
+    function selectCamera(camId) {
+      if (selectedCam === camId && mode === 'live') return;
+      selectedCam = camId;
+      recHeader.textContent = `Grabaciones (${camId})`;
+      setLive();
+      fetchRecs();
+      renderTabs(lastCamerasCache);
+    }
+
+    function setLive() {
+      if (!selectedCam) return;
+      mode = 'live';
+      stopCurrentMedia();
+      title.textContent = `En Vivo: ${selectedCam}`;
+      // Query string con timestamp evita caché del navegador al volver a vivo
+      viewer.innerHTML = `<img src="/live/${encodeURIComponent(selectedCam)}?t=${Date.now()}" alt="Stream ${selectedCam}">`;
+    }
+
+    function playRec(url, name) {
+      mode = 'playback';
+      stopCurrentMedia();
+      title.textContent = `${selectedCam} — ${name}`;
+      viewer.innerHTML = `<video src="${url}" controls autoplay></video>`;
+    }
+
+    let lastCamerasCache = [];
+
+    function renderTabs(cams) {
+      lastCamerasCache = cams;
+      if (!cams.length) {
+        tabsEl.innerHTML = '<span style="color:#94a3b8; font-size:0.9rem;">Ninguna cámara detectada aún</span>';
+        return;
+      }
+      tabsEl.innerHTML = '';
+      cams.forEach(c => {
+        const btn = document.createElement('button');
+        btn.className = 'cam-tab' + (c.id === selectedCam ? ' active' : '');
+        btn.onclick = () => selectCamera(c.id);
+        btn.innerHTML = `<span class="dot ${c.online ? 'online' : ''}"></span>${c.id}`;
+        tabsEl.appendChild(btn);
+      });
+    }
+
+    async function fetchCameras() {
+      try {
+        const res = await fetch('/api/cameras');
+        const cams = await res.json();
+        renderTabs(cams);
+        if (!selectedCam && cams.length > 0) {
+          const preferred = cams.find(c => c.online) || cams[0];
+          selectCamera(preferred.id);
+        }
+      } catch (e) {
+        console.error('Error consultando cámaras:', e);
+      }
+    }
+
+    async function fetchRecs() {
+      if (!selectedCam) return;
+      try {
+        const res = await fetch(`/api/recordings/${encodeURIComponent(selectedCam)}`);
+        const items = await res.json();
+        listEl.innerHTML = items.length ? '' : '<p style="color:#94a3b8;">Aún no hay grabaciones cerradas para esta cámara.</p>';
+        items.forEach(item => {
+          const div = document.createElement('div');
+          div.className = 'rec';
+          div.innerHTML = `
+            <div><strong>${item.name}</strong></div>
+            <div style="color:#94a3b8;">Tamaño: ${item.size_kb} KB</div>
+            <button class="btn" onclick="playRec('${item.url}', '${item.name}')">Ver</button>
+            <a class="btn" href="${item.url}" download="${item.name}">Descargar</a>
+          `;
+          listEl.appendChild(div);
+        });
+      } catch (e) {
+        listEl.innerHTML = '<p style="color:#f87171;">Error cargando grabaciones.</p>';
+      }
+    }
+
+    fetchCameras();
+    setInterval(fetchCameras, 5000);
+    setInterval(fetchRecs, 15000);
+  </script>
+</body>
+</html>
